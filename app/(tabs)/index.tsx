@@ -11,9 +11,10 @@ import {
 } from 'react-native';
 
 interface Comunicado {
-  id: string;
+  id: number | string;
   titulo: string;
-  contenido: string;
+  mensaje?: string;
+  contenido?: string;
   tipo: string;
   fecha_publicacion: string;
 }
@@ -78,7 +79,9 @@ export default function DashboardScreen() {
     <View style={styles.container}>
       {/* Encabezado con datos del profesor logueado */}
       <View style={styles.header}>
-        <Text style={styles.saludo}>¡Hola, {docente?.nombre ? `${docente.nombre} ${docente.apellido}` : 'Docente'}!</Text>
+        <Text style={styles.saludo}>
+          ¡Hola, {docente?.nombre ? `${docente.nombre} ${docente.apellido || ''}`.trim() : 'Docente'}!
+        </Text>
         <Text style={styles.subtitulo}>Panel de Comunicados y Novedades</Text>
       </View>
 
@@ -90,33 +93,38 @@ export default function DashboardScreen() {
       ) : (
         <FlatList
           data={comunicados}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item) => String(item.id)}
           refreshControl={
             <RefreshControl refreshing={refrescando} onRefresh={onRefresh} />
           }
           ListEmptyComponent={
             <Text style={styles.vacioTexto}>No hay comunicados vigentes en este momento.</Text>
           }
-          renderItem={({ item }) => (
-            <View style={[
-              styles.card, 
-              item.tipo === 'urgente' ? styles.cardUrgente : styles.cardNormal
-            ]}>
-              <View style={styles.badgeFila}>
-                <Text style={[
-                  styles.badge, 
-                  item.tipo === 'urgente' ? styles.badgeUrgente : styles.badgeNormal
-                ]}>
-                  {item.tipo.toUpperCase()}
-                </Text>
-                <Text style={styles.fecha}>
-                  {new Date(item.fecha_publicacion).toLocaleDateString()}
-                </Text>
+          renderItem={({ item }) => {
+            const esUrgente = item.tipo?.toLowerCase() === 'urgente';
+            const textoMensaje = item.mensaje || item.contenido;
+
+            return (
+              <View style={[styles.card, esUrgente ? styles.cardUrgente : styles.cardNormal]}>
+                <View style={styles.badgeFila}>
+                  <Text style={[styles.badge, esUrgente ? styles.badgeUrgente : styles.badgeNormal]}>
+                    {(item.tipo || 'General').toUpperCase()}
+                  </Text>
+                  <Text style={styles.fecha}>
+                    {item.fecha_publicacion
+                      ? new Date(item.fecha_publicacion).toLocaleDateString()
+                      : ''}
+                  </Text>
+                </View>
+
+                <Text style={styles.cardTitulo}>{item.titulo}</Text>
+
+                {textoMensaje ? (
+                  <Text style={styles.cardContenido}>{textoMensaje}</Text>
+                ) : null}
               </View>
-              <Text style={styles.cardTitulo}>{item.titulo}</Text>
-              <Text style={styles.cardContenido}>{item.contenido}</Text>
-            </View>
-          )}
+            );
+          }}
           contentContainerStyle={styles.listContainer}
         />
       )}
@@ -153,11 +161,11 @@ const styles = StyleSheet.create({
   cardNormal: { borderLeftColor: '#3B82F6' },
   cardUrgente: { borderLeftColor: '#EF4444' },
   badgeFila: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8, alignItems: 'center' },
-  badge: { fontSize: 10, fontWeight: 'bold', paddingVertical: 2, paddingHorizontal: 8, borderRadius: 4 },
+  badge: { fontSize: 10, fontWeight: 'bold', paddingVertical: 2, paddingHorizontal: 8, borderRadius: 4, overflow: 'hidden' },
   badgeNormal: { backgroundColor: '#DBEAFE', color: '#1E40AF' },
   badgeUrgente: { backgroundColor: '#FEE2E2', color: '#991B1B' },
   fecha: { fontSize: 11, color: '#9CA3AF' },
   cardTitulo: { fontSize: 16, fontWeight: 'bold', color: '#1E293B', marginBottom: 6 },
-  cardContenido: { fontSize: 13, color: '#475569', lineHeight: 18 },
+  cardContenido: { fontSize: 13, color: '#475569', lineHeight: 20 },
   vacioTexto: { textAlign: 'center', marginTop: 40, color: '#94A3B8', fontSize: 14 }
 });
