@@ -2,7 +2,7 @@ import { supabase } from '@/constants/supabase';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -17,7 +17,7 @@ import {
   View
 } from 'react-native';
 
-// Helper compatible para alertas en Web y Móvil
+// Helper compatible para alertas en Web y Movil
 const notificar = (titulo: string, mensaje: string) => {
   if (Platform.OS === 'web') {
     window.alert(`${titulo}: ${mensaje}`);
@@ -47,11 +47,11 @@ export default function LoginScreen() {
   const [regConfirmPassword, setRegConfirmPassword] = useState('');
   const [verRegPassword, setVerRegPassword] = useState(false);
 
-  // Estado para Recuperación
+  // Estado para Recuperacion
   const [recupEmail, setRecupEmail] = useState('');
 
   // ----------------------------------------------------
-  // 1. INICIAR SESIÓN CON SUPABASE AUTH (CORREO O RUT)
+  // 1. INICIAR SESION CON CREDENCIALES (CORREO O RUT)
   // ----------------------------------------------------
   const handleLogin = async () => {
     const idLimpio = identificador.trim().toLowerCase();
@@ -65,34 +65,50 @@ export default function LoginScreen() {
     try {
       setCargando(true);
       let emailParaAuth = idLimpio;
+      let docenteEncontrado: any = null;
 
-      // Si el identificador no tiene formato de email, asumimos que ingresó un RUT
+      // Si el identificador no tiene formato de email, buscamos por RUT
       if (!idLimpio.includes('@')) {
-        const { data: docente, error: docError } = await supabase
-          .from('profesores')
-          .select('email, activo')
-          .eq('rut', idLimpio)
+        const { data: docDirecto } = await supabase
+          .from('docentes')
+          .select('*')
+          .or(`rut.eq.${idLimpio},rut.ilike.%${idLimpio}%`)
           .maybeSingle();
 
-        if (docError || !docente) {
-          notificar(
-            'RUT No Encontrado',
-            'No encontramos ningún docente registrado con ese RUT en el sistema.'
+        if (docDirecto) {
+          docenteEncontrado = docDirecto;
+        } else {
+          // Busqueda flexible limpiando puntos y guiones
+          const { data: todosDocentes } = await supabase
+            .from('docentes')
+            .select('*');
+
+          const rutEntradaLimpio = idLimpio.replace(/[^0-9kK]/g, '');
+          const coincidencia = (todosDocentes || []).find((d: any) =>
+            (d.rut || '').replace(/[^0-9kK]/g, '').toLowerCase() === rutEntradaLimpio
           );
-          setCargando(false);
-          return;
+
+          if (!coincidencia) {
+            notificar(
+              'RUT No Encontrado',
+              'No encontramos ningún docente registrado con ese RUT en el sistema.'
+            );
+            setCargando(false);
+            return;
+          }
+          docenteEncontrado = coincidencia;
         }
 
-        if (docente.activo === false) {
+        if (docenteEncontrado.activo === false) {
           notificar('Acceso Deshabilitado', 'Tu cuenta se encuentra inactiva. Contacta a UTP.');
           setCargando(false);
           return;
         }
 
-        emailParaAuth = docente.email.trim().toLowerCase();
+        emailParaAuth = docenteEncontrado.email.trim().toLowerCase();
       }
 
-      // Autenticación real contra Supabase Auth
+      // Autenticacion contra el servicio central
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email: emailParaAuth,
         password: passLimpia,
@@ -102,7 +118,12 @@ export default function LoginScreen() {
         if (authError.message.includes('Invalid login credentials')) {
           notificar(
             'Credenciales Incorrectas',
-            'El correo/RUT o la contraseña son incorrectos. Si aún no creas tu clave en la app, pulsa en "Registrarse".'
+            'El correo/RUT o la contraseña no coinciden. Si aún no activas tu clave en la app móvil, pulsa en "Registrarse".'
+          );
+        } else if (authError.message.includes('Email not confirmed')) {
+          notificar(
+            'Confirmación Pendiente',
+            'Tu cuenta requiere confirmación de correo. Revisa tu bandeja de entrada o contacta al administrador del sistema.'
           );
         } else {
           notificar('Error al Iniciar Sesión', authError.message);
@@ -110,25 +131,71 @@ export default function LoginScreen() {
         return;
       }
 
-      // Si las credenciales fueron válidas, obtenemos el perfil del profesor
-      const { data: perfilProfesor } = await supabase
-        .from('profesores')
-        .select('*')
-        .eq('email', emailParaAuth)
-        .maybeSingle();
+      // Obtener el perfil del docente desde la tabla central 'docentes'
+      let perfilDocente = docenteEncontrado;
+      if (!perfilDocente) {
+        const { data: docData } = await supabase
+          .from('docentes')
+          .select('*')
+          .eq('email', emailParaAuth)
+          .maybeSingle();
+        perfilDocente = docData;
+      }
 
-      const datosSesion = perfilProfesor || {
-        id: authData.user?.id,
-        email: authData.user?.email,
-        nombre: authData.user?.user_metadata?.nombre || 'Docente',
-        apellido: authData.user?.user_metadata?.apellido || '',
-        rut: authData.user?.user_metadata?.rut || '',
+      // Si el usuario existe en autenticacion pero aun no tenia fila en docentes, crearla automaticamente
+      if (!perfilDocente) {
+        const { data: inst } = await supabase
+          .from('instituciones')
+          .select('id')
+          .limit(1)
+          .maybeSingle();
+
+        const instId = inst?.id || 'cmvwy34xs0001h7t8zqgr778p';
+        const docId = authData.user?.id || `doc_${Date.now()}`;
+        const meta = authData.user?.user_metadata || {};
+
+        const { data: creado } = await supabase
+          .from('docentes')
+          .insert([
+            {
+              id: docId,
+              institucionId: instId,
+              nombre: meta.nombre || 'Docente',
+              apellido: meta.apellido || '',
+              email: emailParaAuth,
+              rut: meta.rut || '',
+              departamento: 'Docencia General',
+              tipoJornada: 'COMPLETA',
+              horasContrato: 44,
+              horasLectivasMax: 28,
+              horasNoLectivas: 16,
+              activo: true,
+              updatedAt: new Date().toISOString(),
+            },
+          ])
+          .select()
+          .maybeSingle();
+
+        perfilDocente = creado;
+      }
+
+      const datosSesion = {
+        id: perfilDocente?.id || authData.user?.id,
+        docenteId: perfilDocente?.id || authData.user?.id,
+        email: perfilDocente?.email || authData.user?.email || emailParaAuth,
+        nombre: perfilDocente?.nombre || authData.user?.user_metadata?.nombre || 'Docente',
+        apellido: perfilDocente?.apellido || authData.user?.user_metadata?.apellido || '',
+        rut: perfilDocente?.rut || authData.user?.user_metadata?.rut || '',
+        departamento: perfilDocente?.departamento || '',
+        horas_contratadas: perfilDocente?.horasContrato || 44,
+        horasContrato: perfilDocente?.horasContrato || 44,
+        institucionId: perfilDocente?.institucionId || null,
       };
 
       // Guardar en almacenamiento local
       await AsyncStorage.setItem('profesor_sesion', JSON.stringify(datosSesion));
 
-      // Entrar directamente a las pestañas de la aplicación
+      // Entrar directamente a las pestañas de la aplicacion
       router.replace('/(tabs)');
     } catch (err: any) {
       notificar('Error Inesperado', err?.message || 'No fue posible iniciar sesión.');
@@ -138,12 +205,12 @@ export default function LoginScreen() {
   };
 
   // ----------------------------------------------------
-  // 2. REGISTRO DE DOCENTE EN SUPABASE AUTH + TABLA PROFESORES
+  // 2. REGISTRO DE DOCENTE Y VINCULACION CENTRAL
   // ----------------------------------------------------
   const handleRegistro = async () => {
     const nombre = regNombre.trim();
     const apellido = regApellido.trim();
-    const rut = regRut.trim().toLowerCase();
+    const rut = regRut.trim();
     const email = regEmail.trim().toLowerCase();
     const pass = regPassword.trim();
     const confirmPass = regConfirmPassword.trim();
@@ -154,7 +221,7 @@ export default function LoginScreen() {
     }
 
     if (!email.includes('@') || !email.includes('.')) {
-      notificar('Correo Inválido', 'Ingresa un correo electrónico institucional válido.');
+      notificar('Correo Inválido', 'Ingresa un correo electrónico válido.');
       return;
     }
 
@@ -171,7 +238,7 @@ export default function LoginScreen() {
     try {
       setCargando(true);
 
-      // 1. Crear el usuario en Supabase Auth
+      // 1. Crear el usuario en el servicio de autenticacion
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email,
         password: pass,
@@ -185,45 +252,80 @@ export default function LoginScreen() {
       });
 
       if (authError) {
-        notificar('Error en Registro', authError.message);
+        if (authError.message.includes('already registered')) {
+          notificar(
+            'Cuenta Ya Registrada',
+            'Este correo ya se encuentra registrado. Por favor inicia sesión o recupera tu contraseña.'
+          );
+        } else {
+          notificar('Error en Registro', authError.message);
+        }
         return;
       }
 
-      // 2. Vincular o registrar en la tabla 'profesores'
-      const { data: profesorExistente } = await supabase
-        .from('profesores')
-        .select('id')
+      // 2. Vincular o crear el registro en la tabla 'docentes'
+      const { data: docenteExistente } = await supabase
+        .from('docentes')
+        .select('id, institucionId')
         .or(`email.eq.${email},rut.eq.${rut}`)
         .maybeSingle();
 
-      if (profesorExistente) {
+      if (docenteExistente) {
         await supabase
-          .from('profesores')
+          .from('docentes')
           .update({
             nombre,
             apellido,
             email,
             rut,
             activo: true,
+            updatedAt: new Date().toISOString(),
           })
-          .eq('id', profesorExistente.id);
+          .eq('id', docenteExistente.id);
       } else {
-        await supabase.from('profesores').insert([
+        const { data: inst } = await supabase
+          .from('instituciones')
+          .select('id')
+          .limit(1)
+          .maybeSingle();
+
+        const instId = inst?.id || 'cmvwy34xs0001h7t8zqgr778p';
+        const docId = authData.user?.id || `doc_${Date.now()}`;
+
+        const { error: insertError } = await supabase.from('docentes').insert([
           {
+            id: docId,
+            institucionId: instId,
             nombre,
             apellido,
             email,
             rut,
+            departamento: 'Docencia General',
+            tipoJornada: 'COMPLETA',
+            horasContrato: 44,
+            horasLectivasMax: 28,
+            horasNoLectivas: 16,
             activo: true,
-            horas_contratadas: 44,
+            updatedAt: new Date().toISOString(),
           },
         ]);
+
+        if (insertError) {
+          console.error('Error al insertar perfil en docentes:', insertError);
+        }
       }
 
-      notificar(
-        '¡Registro Exitoso!',
-        'Tu cuenta ha sido creada exitosamente. Ya puedes iniciar sesión con tu correo o RUT y contraseña.'
-      );
+      if (!authData.session) {
+        notificar(
+          'Registro Recibido',
+          'Tu cuenta fue creada exitosamente. Si el sistema requiere confirmación por correo, revisa tu bandeja de entrada antes de iniciar sesión.'
+        );
+      } else {
+        notificar(
+          'Registro Exitoso',
+          'Tu cuenta ha sido creada exitosamente. Ya puedes iniciar sesión con tu correo o RUT y contraseña.'
+        );
+      }
 
       // Limpiar formulario y pasar al modo login
       setIdentificador(email);
@@ -237,33 +339,33 @@ export default function LoginScreen() {
   };
 
   // ----------------------------------------------------
-  // 3. RECUPERAR CONTRASEÑA (RESET POR EMAIL)
+  // 3. RECUPERAR CONTRASEÑA
   // ----------------------------------------------------
   const handleRecuperarPassword = async () => {
-    const email = recupEmail.trim().toLowerCase();
+    const emailLimpio = recupEmail.trim().toLowerCase();
 
-    if (!email || !email.includes('@')) {
-      notificar('Correo Requerido', 'Ingresa tu correo institucional registrado.');
+    if (!emailLimpio || !emailLimpio.includes('@')) {
+      notificar('Correo Requerido', 'Por favor ingresa tu correo electrónico registrado.');
       return;
     }
 
     try {
       setCargando(true);
-      const { error } = await supabase.auth.resetPasswordForEmail(email);
+      const { error } = await supabase.auth.resetPasswordForEmail(emailLimpio);
 
       if (error) {
-        notificar('Error al Enviar', error.message);
+        notificar('Aviso', error.message);
         return;
       }
 
       notificar(
-        'Correo Enviado',
-        `Hemos enviado un enlace para restablecer tu contraseña a ${email}. Revisa tu bandeja de entrada o spam.`
+        'Instrucciones Enviadas',
+        'Si el correo se encuentra registrado, recibirás un mensaje para restablecer tu contraseña.'
       );
       setModo('login');
       setRecupEmail('');
     } catch (err: any) {
-      notificar('Error', err?.message || 'No se pudo procesar la solicitud.');
+      notificar('Error Inesperado', err?.message || 'Error al procesar la solicitud.');
     } finally {
       setCargando(false);
     }
@@ -272,272 +374,317 @@ export default function LoginScreen() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <KeyboardAvoidingView
+        style={styles.keyboardView}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.container}
       >
         <ScrollView
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
         >
-          {/* Logo y Encabezado */}
-          <View style={styles.brandHeader}>
-            <View style={styles.iconContainer}>
-              <Ionicons name="school" size={42} color="#1B2B4B" />
+          {/* Tarjeta Central */}
+          <View style={styles.cardContainer}>
+            {/* Logo y Encabezado */}
+            <View style={styles.header}>
+              <View style={styles.iconCircle}>
+                <Ionicons name="school" size={42} color="#FFFFFF" />
+              </View>
+              <Text style={styles.appTitle}>EduSchedule</Text>
+              <Text style={styles.appSubtitle}>Portal Móvil Docente</Text>
             </View>
-            <Text style={styles.brandTitle}>EduSchedule</Text>
-            <Text style={styles.brandTagline}>Portal Docente y Gestión de Horarios</Text>
-          </View>
 
-          {/* Tarjeta Principal */}
-          <View style={styles.card}>
-            {/* Selector de Modo (Login / Registro) */}
+            {/* Selector de Pestañas Superiores (Login / Registro) */}
             {modo !== 'forgot' && (
-              <View style={styles.segmentContainer}>
+              <View style={styles.tabSelector}>
                 <TouchableOpacity
-                  style={[styles.segmentBtn, modo === 'login' && styles.segmentBtnActivo]}
+                  style={[styles.tabBtn, modo === 'login' && styles.tabBtnActivo]}
                   onPress={() => setModo('login')}
-                  disabled={cargando}
+                  activeOpacity={0.8}
                 >
-                  <Text style={[styles.segmentTexto, modo === 'login' && styles.segmentTextoActivo]}>
+                  <Text style={[styles.tabBtnTexto, modo === 'login' && styles.tabBtnTextoActivo]}>
                     Iniciar Sesión
                   </Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={[styles.segmentBtn, modo === 'register' && styles.segmentBtnActivo]}
+                  style={[styles.tabBtn, modo === 'register' && styles.tabBtnActivo]}
                   onPress={() => setModo('register')}
-                  disabled={cargando}
+                  activeOpacity={0.8}
                 >
-                  <Text style={[styles.segmentTexto, modo === 'register' && styles.segmentTextoActivo]}>
+                  <Text style={[styles.tabBtnTexto, modo === 'register' && styles.tabBtnTextoActivo]}>
                     Registrarse
                   </Text>
                 </TouchableOpacity>
               </View>
             )}
 
-            {/* VISTA 1: INICIAR SESIÓN */}
+            {/* ========================================================= */}
+            {/* VISTA 1: FORMULARIO DE INICIO DE SESIÓN */}
+            {/* ========================================================= */}
             {modo === 'login' && (
               <View style={styles.form}>
-                <Text style={styles.inputLabel}>Correo Institucional o RUT</Text>
-                <View style={styles.inputWrapper}>
-                  <Ionicons name="person-outline" size={20} color="#718096" style={styles.inputIcon} />
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="Ej: juan.perez@colegio.cl o 12345678-9"
-                    placeholderTextColor="#A0AEC0"
-                    value={identificador}
-                    onChangeText={setIdentificador}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                  />
-                </View>
+                <Text style={styles.sectionTitle}>Acceso Docente</Text>
+                <Text style={styles.sectionDesc}>
+                  Ingresa con tu correo institucional o RUT y tu contraseña.
+                </Text>
 
-                <Text style={styles.inputLabel}>Contraseña</Text>
-                <View style={styles.inputWrapper}>
-                  <Ionicons name="lock-closed-outline" size={20} color="#718096" style={styles.inputIcon} />
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="Ingresa tu contraseña"
-                    placeholderTextColor="#A0AEC0"
-                    value={password}
-                    onChangeText={setPassword}
-                    secureTextEntry={!verPassword}
-                  />
-                  <TouchableOpacity
-                    onPress={() => setVerPassword(!verPassword)}
-                    style={styles.eyeBtn}
-                  >
-                    <Ionicons
-                      name={verPassword ? 'eye-off-outline' : 'eye-outline'}
-                      size={20}
-                      color="#718096"
+                {/* Campo Identificador */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Correo Institucional o RUT</Text>
+                  <View style={styles.inputWrapper}>
+                    <Ionicons name="person-outline" size={20} color="#64748B" style={styles.inputIcon} />
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="ejemplo@liceo.cl o 12.345.678-9"
+                      placeholderTextColor="#94A3B8"
+                      value={identificador}
+                      onChangeText={setIdentificador}
+                      autoCapitalize="none"
+                      autoCorrect={false}
                     />
-                  </TouchableOpacity>
+                  </View>
                 </View>
 
+                {/* Campo Contraseña */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Contraseña</Text>
+                  <View style={styles.inputWrapper}>
+                    <Ionicons name="lock-closed-outline" size={20} color="#64748B" style={styles.inputIcon} />
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="Ingresa tu contraseña"
+                      placeholderTextColor="#94A3B8"
+                      value={password}
+                      onChangeText={setPassword}
+                      secureTextEntry={!verPassword}
+                      autoCapitalize="none"
+                    />
+                    <TouchableOpacity
+                      onPress={() => setVerPassword(!verPassword)}
+                      style={styles.eyeBtn}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons
+                        name={verPassword ? 'eye-off-outline' : 'eye-outline'}
+                        size={20}
+                        color="#64748B"
+                      />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {/* Enlace Olvidé mi Contraseña */}
                 <TouchableOpacity
                   style={styles.forgotBtn}
                   onPress={() => setModo('forgot')}
-                  disabled={cargando}
+                  activeOpacity={0.7}
                 >
                   <Text style={styles.forgotText}>¿Olvidaste tu contraseña?</Text>
                 </TouchableOpacity>
 
+                {/* Botón Principal Iniciar Sesión */}
                 <TouchableOpacity
-                  style={[styles.mainBtn, cargando && styles.btnDisabled]}
+                  style={[styles.primaryBtn, cargando && styles.btnDisabled]}
                   onPress={handleLogin}
                   disabled={cargando}
+                  activeOpacity={0.8}
                 >
                   {cargando ? (
-                    <ActivityIndicator color="white" />
+                    <ActivityIndicator size="small" color="#FFFFFF" />
                   ) : (
-                    <Text style={styles.mainBtnText}>Ingresar</Text>
+                    <Text style={styles.primaryBtnText}>Ingresar al Portal</Text>
                   )}
                 </TouchableOpacity>
               </View>
             )}
 
-            {/* VISTA 2: REGISTRO */}
+            {/* ========================================================= */}
+            {/* VISTA 2: FORMULARIO DE REGISTRO DE DOCENTE */}
+            {/* ========================================================= */}
             {modo === 'register' && (
               <View style={styles.form}>
-                <View style={styles.row}>
-                  <View style={[styles.flexCol, { marginRight: 8 }]}>
+                <Text style={styles.sectionTitle}>Registro de Docente</Text>
+                <Text style={styles.sectionDesc}>
+                  Crea tu clave de acceso vinculada a tu establecimiento.
+                </Text>
+
+                {/* Nombres y Apellidos en dos columnas */}
+                <View style={styles.rowInputs}>
+                  <View style={[styles.inputGroup, { flex: 1, marginRight: 6 }]}>
                     <Text style={styles.inputLabel}>Nombre</Text>
                     <View style={styles.inputWrapper}>
                       <TextInput
                         style={styles.textInput}
-                        placeholder="Juan"
-                        placeholderTextColor="#A0AEC0"
+                        placeholder="Nombre"
+                        placeholderTextColor="#94A3B8"
                         value={regNombre}
                         onChangeText={setRegNombre}
+                        autoCapitalize="words"
                       />
                     </View>
                   </View>
 
-                  <View style={[styles.flexCol, { marginLeft: 8 }]}>
+                  <View style={[styles.inputGroup, { flex: 1, marginLeft: 6 }]}>
                     <Text style={styles.inputLabel}>Apellido</Text>
                     <View style={styles.inputWrapper}>
                       <TextInput
                         style={styles.textInput}
-                        placeholder="Pérez"
-                        placeholderTextColor="#A0AEC0"
+                        placeholder="Apellido"
+                        placeholderTextColor="#94A3B8"
                         value={regApellido}
                         onChangeText={setRegApellido}
+                        autoCapitalize="words"
                       />
                     </View>
                   </View>
                 </View>
 
-                <Text style={styles.inputLabel}>RUT (con guion y dígito verificador)</Text>
-                <View style={styles.inputWrapper}>
-                  <Ionicons name="card-outline" size={20} color="#718096" style={styles.inputIcon} />
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="Ej: 12345678-9"
-                    placeholderTextColor="#A0AEC0"
-                    value={regRut}
-                    onChangeText={setRegRut}
-                    autoCapitalize="none"
-                  />
-                </View>
-
-                <Text style={styles.inputLabel}>Correo Institucional</Text>
-                <View style={styles.inputWrapper}>
-                  <Ionicons name="mail-outline" size={20} color="#718096" style={styles.inputIcon} />
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="nombre@colegio.cl"
-                    placeholderTextColor="#A0AEC0"
-                    value={regEmail}
-                    onChangeText={setRegEmail}
-                    keyboardType="email-address"
-                    autoCapitalize="none"
-                  />
-                </View>
-
-                <Text style={styles.inputLabel}>Contraseña (mínimo 6 caracteres)</Text>
-                <View style={styles.inputWrapper}>
-                  <Ionicons name="lock-closed-outline" size={20} color="#718096" style={styles.inputIcon} />
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="••••••••"
-                    placeholderTextColor="#A0AEC0"
-                    value={regPassword}
-                    onChangeText={setRegPassword}
-                    secureTextEntry={!verRegPassword}
-                  />
-                  <TouchableOpacity
-                    onPress={() => setVerRegPassword(!verRegPassword)}
-                    style={styles.eyeBtn}
-                  >
-                    <Ionicons
-                      name={verRegPassword ? 'eye-off-outline' : 'eye-outline'}
-                      size={20}
-                      color="#718096"
+                {/* Campo RUT */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>RUT</Text>
+                  <View style={styles.inputWrapper}>
+                    <Ionicons name="card-outline" size={20} color="#64748B" style={styles.inputIcon} />
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="12.345.678-9"
+                      placeholderTextColor="#94A3B8"
+                      value={regRut}
+                      onChangeText={setRegRut}
+                      autoCapitalize="none"
+                      autoCorrect={false}
                     />
-                  </TouchableOpacity>
+                  </View>
                 </View>
 
-                <Text style={styles.inputLabel}>Confirmar Contraseña</Text>
-                <View style={styles.inputWrapper}>
-                  <Ionicons name="checkmark-circle-outline" size={20} color="#718096" style={styles.inputIcon} />
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="••••••••"
-                    placeholderTextColor="#A0AEC0"
-                    value={regConfirmPassword}
-                    onChangeText={setRegConfirmPassword}
-                    secureTextEntry={!verRegPassword}
-                  />
+                {/* Campo Correo Institucional */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Correo Institucional</Text>
+                  <View style={styles.inputWrapper}>
+                    <Ionicons name="mail-outline" size={20} color="#64748B" style={styles.inputIcon} />
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="profesor@institucion.cl"
+                      placeholderTextColor="#94A3B8"
+                      value={regEmail}
+                      onChangeText={setRegEmail}
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                  </View>
                 </View>
 
+                {/* Campo Nueva Contraseña */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Crear Contraseña (mínimo 6 caracteres)</Text>
+                  <View style={styles.inputWrapper}>
+                    <Ionicons name="lock-closed-outline" size={20} color="#64748B" style={styles.inputIcon} />
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="Mínimo 6 caracteres"
+                      placeholderTextColor="#94A3B8"
+                      value={regPassword}
+                      onChangeText={setRegPassword}
+                      secureTextEntry={!verRegPassword}
+                      autoCapitalize="none"
+                    />
+                    <TouchableOpacity
+                      onPress={() => setVerRegPassword(!verRegPassword)}
+                      style={styles.eyeBtn}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons
+                        name={verRegPassword ? 'eye-off-outline' : 'eye-outline'}
+                        size={20}
+                        color="#64748B"
+                      />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {/* Confirmar Contraseña */}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Confirmar Contraseña</Text>
+                  <View style={styles.inputWrapper}>
+                    <Ionicons name="shield-checkmark-outline" size={20} color="#64748B" style={styles.inputIcon} />
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="Repite tu contraseña"
+                      placeholderTextColor="#94A3B8"
+                      value={regConfirmPassword}
+                      onChangeText={setRegConfirmPassword}
+                      secureTextEntry={!verRegPassword}
+                      autoCapitalize="none"
+                    />
+                  </View>
+                </View>
+
+                {/* Botón Registrarse */}
                 <TouchableOpacity
-                  style={[styles.mainBtn, styles.registerBtn, cargando && styles.btnDisabled]}
+                  style={[styles.primaryBtn, cargando && styles.btnDisabled]}
                   onPress={handleRegistro}
                   disabled={cargando}
+                  activeOpacity={0.8}
                 >
                   {cargando ? (
-                    <ActivityIndicator color="white" />
+                    <ActivityIndicator size="small" color="#FFFFFF" />
                   ) : (
-                    <Text style={styles.mainBtnText}>Crear Cuenta Docente</Text>
+                    <Text style={styles.primaryBtnText}>Completar Registro</Text>
                   )}
                 </TouchableOpacity>
               </View>
             )}
 
-            {/* VISTA 3: ¿OLVIDASTE TU CONTRASEÑA? */}
+            {/* ========================================================= */}
+            {/* VISTA 3: RECUPERACIÓN DE CONTRASEÑA */}
+            {/* ========================================================= */}
             {modo === 'forgot' && (
               <View style={styles.form}>
-                <View style={styles.forgotHeader}>
-                  <Ionicons name="key-outline" size={36} color="#1B2B4B" />
-                  <Text style={styles.forgotTitle}>Recuperar Contraseña</Text>
-                  <Text style={styles.forgotSubtitle}>
-                    Ingresa tu correo institucional y te enviaremos las instrucciones oficiales para restablecer tu clave.
-                  </Text>
-                </View>
-
-                <Text style={styles.inputLabel}>Correo Institucional</Text>
-                <View style={styles.inputWrapper}>
-                  <Ionicons name="mail-outline" size={20} color="#718096" style={styles.inputIcon} />
-                  <TextInput
-                    style={styles.textInput}
-                    placeholder="nombre@colegio.cl"
-                    placeholderTextColor="#A0AEC0"
-                    value={recupEmail}
-                    onChangeText={setRecupEmail}
-                    keyboardType="email-address"
-                    autoCapitalize="none"
-                  />
-                </View>
-
-                <TouchableOpacity
-                  style={[styles.mainBtn, cargando && styles.btnDisabled]}
-                  onPress={handleRecuperarPassword}
-                  disabled={cargando}
-                >
-                  {cargando ? (
-                    <ActivityIndicator color="white" />
-                  ) : (
-                    <Text style={styles.mainBtnText}>Enviar Enlace</Text>
-                  )}
-                </TouchableOpacity>
-
                 <TouchableOpacity
                   style={styles.backBtn}
                   onPress={() => setModo('login')}
-                  disabled={cargando}
+                  activeOpacity={0.7}
                 >
-                  <Text style={styles.backBtnText}>← Volver a Iniciar Sesión</Text>
+                  <Ionicons name="arrow-back" size={20} color="#1E293B" />
+                  <Text style={styles.backBtnText}>Volver a Iniciar Sesión</Text>
+                </TouchableOpacity>
+
+                <Text style={styles.sectionTitle}>Recuperar Contraseña</Text>
+                <Text style={styles.sectionDesc}>
+                  Ingresa tu correo institucional registrado y te enviaremos las instrucciones de restablecimiento.
+                </Text>
+
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Correo Institucional</Text>
+                  <View style={styles.inputWrapper}>
+                    <Ionicons name="mail-outline" size={20} color="#64748B" style={styles.inputIcon} />
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="profesor@institucion.cl"
+                      placeholderTextColor="#94A3B8"
+                      value={recupEmail}
+                      onChangeText={setRecupEmail}
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                  </View>
+                </View>
+
+                <TouchableOpacity
+                  style={[styles.primaryBtn, cargando && styles.btnDisabled]}
+                  onPress={handleRecuperarPassword}
+                  disabled={cargando}
+                  activeOpacity={0.8}
+                >
+                  {cargando ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.primaryBtnText}>Enviar Enlace de Recuperación</Text>
+                  )}
                 </TouchableOpacity>
               </View>
             )}
           </View>
-
-          {/* Pie informativo */}
-          <Text style={styles.disclaimerText}>
-            Uso exclusivo para el personal educativo y directivo de la institución.
-          </Text>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -547,103 +694,103 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#0F172A',
   },
-  container: {
+  keyboardView: {
     flex: 1,
   },
   scrollContent: {
     flexGrow: 1,
     justifyContent: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 35,
-    maxWidth: 480,
-    width: '100%',
-    alignSelf: 'center',
+    padding: 20,
   },
-  brandHeader: {
+  cardContainer: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    padding: 24,
+    shadowColor: '#000000',
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 8,
+  },
+  header: {
     alignItems: 'center',
-    marginBottom: 26,
+    marginBottom: 20,
   },
-  iconContainer: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
-    backgroundColor: '#EEF2FF',
+  iconCircle: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: '#1B2B4B',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#E0E7FF',
   },
-  brandTitle: {
-    fontSize: 28,
+  appTitle: {
+    fontSize: 26,
     fontWeight: '800',
-    color: '#1B2B4B',
+    color: '#0F172A',
     letterSpacing: -0.5,
   },
-  brandTagline: {
-    fontSize: 13,
+  appSubtitle: {
+    fontSize: 14,
     color: '#64748B',
-    marginTop: 4,
+    marginTop: 2,
     fontWeight: '500',
   },
-  card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    padding: 24,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 16,
-    elevation: 4,
-    borderWidth: 1,
-    borderColor: '#F1F5F9',
-  },
-  segmentContainer: {
+  tabSelector: {
     flexDirection: 'row',
     backgroundColor: '#F1F5F9',
-    borderRadius: 10,
+    borderRadius: 14,
     padding: 4,
     marginBottom: 20,
   },
-  segmentBtn: {
+  tabBtn: {
     flex: 1,
-    paddingVertical: 9,
+    paddingVertical: 10,
     alignItems: 'center',
-    borderRadius: 8,
+    borderRadius: 10,
   },
-  segmentBtnActivo: {
+  tabBtnActivo: {
     backgroundColor: '#FFFFFF',
     shadowColor: '#000',
     shadowOpacity: 0.05,
     shadowRadius: 4,
-    elevation: 1,
+    elevation: 2,
   },
-  segmentTexto: {
+  tabBtnTexto: {
     fontSize: 14,
     fontWeight: '600',
     color: '#64748B',
   },
-  segmentTextoActivo: {
+  tabBtnTextoActivo: {
     color: '#1B2B4B',
     fontWeight: '700',
   },
   form: {
-    width: '100%',
+    gap: 14,
   },
-  row: {
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1E293B',
+  },
+  sectionDesc: {
+    fontSize: 13,
+    color: '#64748B',
+    lineHeight: 18,
+    marginBottom: 4,
+  },
+  rowInputs: {
     flexDirection: 'row',
   },
-  flexCol: {
-    flex: 1,
+  inputGroup: {
+    gap: 6,
   },
   inputLabel: {
     fontSize: 13,
     fontWeight: '600',
     color: '#334155',
-    marginBottom: 6,
-    marginTop: 10,
   },
   inputWrapper: {
     flexDirection: 'row',
@@ -651,90 +798,60 @@ const styles = StyleSheet.create({
     backgroundColor: '#F8FAFC',
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    borderRadius: 10,
+    borderRadius: 12,
     paddingHorizontal: 12,
     height: 48,
   },
   inputIcon: {
-    marginRight: 8,
+    marginRight: 10,
   },
   textInput: {
     flex: 1,
-    fontSize: 15,
-    color: '#1E293B',
-    height: '100%',
+    fontSize: 14,
+    color: '#0F172A',
   },
   eyeBtn: {
-    padding: 6,
+    padding: 4,
   },
   forgotBtn: {
     alignSelf: 'flex-end',
-    marginTop: 10,
-    marginBottom: 16,
+    paddingVertical: 4,
   },
   forgotText: {
     fontSize: 13,
-    color: '#2563EB',
     fontWeight: '600',
-  },
-  mainBtn: {
-    backgroundColor: '#1B2B4B',
-    borderRadius: 10,
-    height: 48,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 14,
-    shadowColor: '#1B2B4B',
-    shadowOpacity: 0.2,
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  registerBtn: {
-    backgroundColor: '#2563EB',
-  },
-  btnDisabled: {
-    opacity: 0.65,
-  },
-  mainBtnText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
-  forgotHeader: {
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  forgotTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#1B2B4B',
-    marginTop: 8,
-  },
-  forgotSubtitle: {
-    fontSize: 13,
-    color: '#64748B',
-    textAlign: 'center',
-    marginTop: 6,
-    lineHeight: 18,
-    paddingHorizontal: 8,
+    color: '#2563EB',
   },
   backBtn: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 16,
-    paddingVertical: 6,
+    gap: 6,
+    marginBottom: 8,
   },
   backBtnText: {
-    fontSize: 13,
-    color: '#475569',
+    fontSize: 14,
     fontWeight: '600',
+    color: '#1E293B',
   },
-  disclaimerText: {
-    fontSize: 11,
-    color: '#94A3B8',
-    textAlign: 'center',
-    marginTop: 22,
-    lineHeight: 16,
+  primaryBtn: {
+    backgroundColor: '#1B2B4B',
+    height: 50,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 8,
+    shadowColor: '#1B2B4B',
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    elevation: 3,
+  },
+  btnDisabled: {
+    opacity: 0.6,
+  },
+  primaryBtnText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    letterSpacing: 0.2,
   },
 });
-

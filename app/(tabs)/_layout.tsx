@@ -1,64 +1,85 @@
-import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { Tabs } from 'expo-router';
 
 export default function TabLayout() {
   return (
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: '#1B2B4B',
-        tabBarInactiveTintColor: '#999',
+        tabBarInactiveTintColor: '#94A3B8',
         tabBarStyle: {
-          height: 80,
+          height: 72,
           paddingBottom: 10,
-          paddingTop: 10,
-          backgroundColor: 'white',
+          paddingTop: 8,
+          backgroundColor: '#FFFFFF',
           borderTopWidth: 1,
-          borderTopColor: '#EEE',
+          borderTopColor: '#E2E8F0',
+        },
+        tabBarLabelStyle: {
+          fontSize: 11,
+          fontWeight: '600',
         },
         headerShown: false,
-      }}>
-
-      {/* Pestaña 1: Mi Día */}
+      }}
+    >
+      {/* Pestaña 1: Inicio / Comunicados */}
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Mi Día',
-          tabBarIcon: ({ color }) => <Ionicons name="calendar" size={24} color={color as any} />,
+          title: 'Inicio',
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons
+              name={focused ? 'newspaper' : 'newspaper-outline'}
+              size={22}
+              color={color as any}
+            />
+          ),
         }}
       />
 
-      {/* Pestaña 2: Horario Completo */}
+      {/* Pestaña 2: Mi Horario y Carga Académica */}
       <Tabs.Screen
         name="horario-completo"
         options={{
-          title: 'Malla',
-          tabBarIcon: ({ color }) => <Ionicons name="grid" size={24} color={color as any} />,
+          title: 'Mi Horario',
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons
+              name={focused ? 'calendar' : 'calendar-outline'}
+              size={22}
+              color={color as any}
+            />
+          ),
         }}
       />
 
-      {/* Pestaña 3: Emergencias */}
+      {/* Pestaña 3: Disponibilidad Horaria */}
+      <Tabs.Screen
+        name="disponibilidad"
+        options={{
+          title: 'Disponibilidad',
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons
+              name={focused ? 'time' : 'time-outline'}
+              size={22}
+              color={color as any}
+            />
+          ),
+        }}
+      />
+
+      {/* Pestaña 4: Emergencias e Incidencias */}
       <Tabs.Screen
         name="emergencias"
         options={{
           title: 'Emergencias',
-          tabBarIcon: ({ color }) => <Ionicons name="warning" size={24} color={color as any} />,
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons
+              name={focused ? 'alert-circle' : 'alert-circle-outline'}
+              size={22}
+              color={color as any}
+            />
+          ),
         }}
-      />
-
-      <Tabs.Screen
-      name="avisos"
-      options={{
-        title: 'Avisos',
-        tabBarIcon: ({ color }) => <Ionicons name="megaphone" size={24} color={color as any} />,
-      }}
-      />
-
-      <Tabs.Screen
-      name="disponibilidad"
-      options={{
-        title: 'Disponibilidad',
-        tabBarIcon: ({ color }) => <Ionicons name="time" size={24} color={color as any} />,
-      }}
       />
     </Tabs>
   );
