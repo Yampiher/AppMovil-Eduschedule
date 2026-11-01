@@ -75,6 +75,7 @@ export default function HorarioCompletoScreen() {
 
       if (targetDocenteId) {
         // Consulta relacional sobre las asignaciones horarias del docente
+        // Filtrar estrictamente por estado ASIGNADO para excluir conflictos o asignaciones pendientes
         const { data: asignaciones, error: errorAsig } = await supabase
           .from('asignaciones_horarios')
           .select(`
@@ -87,7 +88,8 @@ export default function HorarioCompletoScreen() {
             espacios_fisicos (nombre, codigo),
             bloques_horarios (diaSemana, horaInicio, horaFin, numeroBloque)
           `)
-          .eq('docenteId', targetDocenteId);
+          .eq('docenteId', targetDocenteId)
+          .eq('estado', 'ASIGNADO');
 
         if (errorAsig) {
           console.error('Error al consultar asignaciones:', errorAsig.message);
